@@ -2,6 +2,8 @@ import argparse
 import random
 import copy
 import math
+from time import time
+import re
 
 parser = argparse.ArgumentParser(description='Compute SAT problem with Simulated Annealing.')
 parser.add_argument('filepath', type=str, help='filepath to instance')
@@ -27,6 +29,8 @@ def sat_clause(state: [bool], clause: [int]):
 
 class SimulatedAnnealing:
     def __init__(self, filepath: str):
+        filename_parts = filepath.split("/")[-1].split("-")
+        self.ID = "-".join(filename_parts[:2])
         f = open(filepath, "r")
         f_content = f.read()
         lines = f_content.split("\n")
@@ -39,7 +43,8 @@ class SimulatedAnnealing:
 
             # load weights of variables
             if line[0] == 'w':
-                self.WEIGHTS: [int] = list(map(int, line.split(' ')[1:-1]))
+                line2 = re.sub(" +", " ", line)
+                self.WEIGHTS: [int] = list(map(int, line2.split(' ')[1:-1]))
                 continue
 
             # load clauses
@@ -85,17 +90,29 @@ class SimulatedAnnealing:
         new_state[idx] = not new_state[idx]
         return new_state
 
+    def random_unsat_clause_bitflip(self, state: [bool]):
+        new_state = copy.deepcopy(state)
+        clause_idx = random.randrange(0, self.sat_clauses(state).count(False))
+        var_in_clause_idx = random.randrange(0, len(self.CLAUSES[clause_idx]))
+        var_idx = abs(self.CLAUSES[clause_idx][var_in_clause_idx]) - 1
+        new_state[var_idx] = not new_state[var_idx]
+        return new_state
+
     def get_neighbor(self, state: [bool]):
-        return self.random_bitflip(state)
+        if self.is_sat(state):
+            return self.random_bitflip(state)
+        return self.random_unsat_clause_bitflip(state)
 
     def cost(self, state: [bool]):
-        return self.count_weights(state) * self.count_of_sat_clauses(state) / self.C_CLAUSES
+        # return self.count_weights(state) * self.count_of_sat_clauses(state) / self.C_CLAUSES
+        return self.count_weights(state) / (self.C_CLAUSES - self.count_of_sat_clauses(state) + 1)
 
     def new_is_better(self, old_state: [bool], new_state: [bool]):
         return self.cost(new_state) > self.cost(old_state)
 
     def how_much_worse(self, old_state: [bool], new_state: [bool]):
-        return self.cost(new_state) - self.cost(old_state)
+        return self.cost(old_state) - self.cost(new_state)
+        # return self.cost(new_state) - self.cost(old_state)
 
     def new_state(self, old_state: [bool], temperature: float):
         new_state = self.get_neighbor(old_state)
@@ -112,7 +129,14 @@ class SimulatedAnnealing:
 
         return old_state
 
-    def compute(self):
+    def create_output_string(self, state: [bool]):
+        adjusted_state = []
+        for i, up in zip(range(self.C_VARIABLES), state):
+            adjusted_state.append(str(i + 1) if up else str(-(i + 1)))
+        adjusted_state.append("0")
+        return self.ID[1:] + " " + str(self.count_weights(state)) + " " + " ".join(adjusted_state)
+
+    def compute(self, white_box=False):
         # get init temperature
         temperature: float = args.init_temperature
 
@@ -121,25 +145,47 @@ class SimulatedAnnealing:
         best = copy.deepcopy(state)
 
         i = 0
+        cost_per_iteration = []
+        sat_clause_rate_per_iteration = []
         while not self.frozen(temperature):
-            # print(">", i)
             j = 0
             while j < self.equilibrium():
                 state = self.new_state(state, temperature)
 
-                # self.sa_cost_per_iteration.append(self.count_total_price(state))
-                # print(">>", j, "W:", self.count_total_weight(state), "\t\tP:", self.count_total_price(state))
+                if white_box:
+                    cost_per_iteration.append(self.cost(state))
+                    sat_clause_rate_per_iteration.append(self.count_of_sat_clauses(state) / self.C_CLAUSES)
+
                 if self.new_is_better(best, state):
                     best = copy.deepcopy(state)
-                    # print(">>> W:", self.count_total_weight(best), "\t\tP:", self.count_total_price(best))
+
                 j += 1
             temperature = self.cool(temperature)
             i += 1
 
+        if white_box:
+            return best, cost_per_iteration, sat_clause_rate_per_iteration
         return best
 
 
 if __name__ == "__main__":
     solver = SimulatedAnnealing(args.filepath)
-    solution = solver.compute()
-    print(solver.count_weights(solution), solver.count_of_sat_clauses(solution), solver.C_CLAUSES)
+
+    # calculate
+    t1 = time()
+    if args.white_box:
+        solution, cost_per_iteration, sat_clause_rate_per_iteration = solver.compute(white_box=args.white_box)
+    else:
+        solution = solver.compute(white_box=args.white_box)
+    t2 = time()
+
+    # print data on output
+    print(solver.create_output_string(solution))
+    print(solver.count_weights(solution),
+          solver.count_of_sat_clauses(solution),
+          solver.C_CLAUSES,
+          f"{(t2-t1):.2f}",
+          solver.ID[1:])
+    if args.white_box:
+        print(" ".join(list(map(str, cost_per_iteration))))
+        print(" ".join(list(map(str, sat_clause_rate_per_iteration))))
