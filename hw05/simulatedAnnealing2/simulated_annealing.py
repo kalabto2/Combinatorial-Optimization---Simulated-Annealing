@@ -7,16 +7,11 @@ import re
 
 parser = argparse.ArgumentParser(description='Compute SAT problem with Simulated Annealing.')
 parser.add_argument('filepath', type=str, help='filepath to instance')
-parser.add_argument('-t', '--init_temperature', type=int, help='Initial temperature of Simulated Annealing', default=10000)
+parser.add_argument('-t', '--init_temperature', type=int, help='Initial temperature of Simulated Annealing', default=None)
 parser.add_argument('-f', '--frozen_boundary', type=int, help='temperature, where algorithm freeze', default=100)
 parser.add_argument('-e', '--equilibrium', type=int, help='steps between cooling', default=250)
 parser.add_argument('-c', '--cooling', type=float, help='Cooling constant', default=0.95)
 parser.add_argument('-w', '--white_box', action='store_true', help="Prints verbose")
-# parser.add_argument('integers', metavar='N', type=int, nargs='+',
-#                     help='an integer for the accumulator')
-# parser.add_argument('--sum', dest='accumulate', action='store_const',
-#                     const=sum, default=max,
-#                     help='sum the integers (default: find the max)')
 args = parser.parse_args()
 
 
@@ -75,6 +70,9 @@ class SimulatedAnnealing:
     def get_random_state(self):
         return [bool(random.randrange(0, 2)) for _ in range(self.C_VARIABLES)]
 
+    def smart_frozen(self, change_frequency: float):
+        pass  # todo
+
     def frozen(self, temperature: float) -> bool:
         return temperature <= args.frozen_boundary
 
@@ -83,6 +81,8 @@ class SimulatedAnnealing:
 
     def cool(self, temperature: float):
         return temperature * args.cooling
+
+    # --------------- Neighbor seeking ---------------
 
     def random_bitflip(self, state: [bool]):
         new_state = copy.deepcopy(state)
@@ -99,9 +99,12 @@ class SimulatedAnnealing:
         return new_state
 
     def get_neighbor(self, state: [bool]):
-        if self.is_sat(state):
-            return self.random_bitflip(state)
-        return self.random_unsat_clause_bitflip(state)
+        return self.random_bitflip(state)
+        # if self.is_sat(state):
+        #     return self.random_bitflip(state)
+        # return self.random_unsat_clause_bitflip(state)
+
+    # --------------- State cost ---------------
 
     def cost(self, state: [bool]):
         # return self.count_weights(state) * self.count_of_sat_clauses(state) / self.C_CLAUSES
@@ -112,16 +115,12 @@ class SimulatedAnnealing:
 
     def how_much_worse(self, old_state: [bool], new_state: [bool]):
         return self.cost(old_state) - self.cost(new_state)
-        # return self.cost(new_state) - self.cost(old_state)
 
     def new_state(self, old_state: [bool], temperature: float):
         new_state = self.get_neighbor(old_state)
 
         if self.new_is_better(old_state, new_state):
             return new_state
-
-        # if self.too_heavy(new_state):
-        #     return old_state
 
         delta = self.how_much_worse(old_state, new_state)
         if random.uniform(0, 1) < math.exp(-delta / temperature):
@@ -167,9 +166,48 @@ class SimulatedAnnealing:
             return best, cost_per_iteration, sat_clause_rate_per_iteration
         return best
 
+    # --------------- Initial temperature ---------------
+
+    def get_total_weights(self):
+        return self.count_weights([True] * self.C_VARIABLES)
+
+    def get_worse_state_prob_acceptance(self, temperature: float):
+        # get init state
+        state = self.get_random_state()
+
+        j = 0
+        worse_accepted = 0
+        while j < self.C_VARIABLES:
+            new_state = self.new_state(state, temperature)
+            if self.cost(new_state) < self.cost(state): # not self.new_is_better(state, new_state):
+                worse_accepted += 1
+            state = new_state
+            j += 1
+
+        return worse_accepted / float(j)
+
+    def feedback_control(self):
+        init_temperature: float = self.get_total_weights() // self.C_VARIABLES
+        prob_boundary = 0.5
+
+        while True:
+            # get probability of worse state acceptance
+            worse_state_prob_acceptance = self.get_worse_state_prob_acceptance(init_temperature)
+
+            # if probability of worse state acceptance is enough high, break
+            if worse_state_prob_acceptance >= prob_boundary:
+                return init_temperature
+
+            # else increase temperature
+            init_temperature *= 2
+
 
 if __name__ == "__main__":
     solver = SimulatedAnnealing(args.filepath)
+
+    # set initial_temperature if not set constant
+    if args.init_temperature is None:
+        args.init_temperature = solver.feedback_control()
 
     # calculate
     t1 = time()
