@@ -7,11 +7,15 @@ import re
 
 parser = argparse.ArgumentParser(description='Compute SAT problem with Simulated Annealing.')
 parser.add_argument('filepath', type=str, help='filepath to instance')
-parser.add_argument('-t', '--init_temperature', type=int, help='Initial temperature of Simulated Annealing', default=None)
-parser.add_argument('-f', '--frozen_boundary', type=int, help='temperature, where algorithm freeze', default=100)
-parser.add_argument('-e', '--equilibrium', type=int, help='steps between cooling', default=250)
-parser.add_argument('-c', '--cooling', type=float, help='Cooling constant', default=0.95)
-parser.add_argument('-w', '--white_box', action='store_true', help="Prints verbose")
+parser.add_argument('-t', '--init_temperature', type=int, help='Initial temperature of Simulated Annealing. Default '
+                                                               'is feedback control configuration.', default=None)
+parser.add_argument('-f', '--frozen_boundary', type=int, help='temperature, where algorithm freeze. Default is '
+                                                              'freezing after superiority of the most valuable state '
+                                                              'in last 100 states.', default=None)
+parser.add_argument('-e', '--equilibrium', type=int, help='steps between cooling. Default is equilibrium auto '
+                                                          'computation.', default=None)
+parser.add_argument('-c', '--cooling', type=float, help='Cooling constant. Default is 0.7 .', default=0.7)
+parser.add_argument('-w', '--white_box', action='store_true', help="Prints additional data.")
 args = parser.parse_args()
 
 
@@ -70,13 +74,21 @@ class SimulatedAnnealing:
     def get_random_state(self):
         return [bool(random.randrange(0, 2)) for _ in range(self.C_VARIABLES)]
 
-    def smart_frozen(self, change_frequency: float):
-        pass  # todo
+    def smart_frozen(self, temperature: float, cost_per_iteration: [float]) -> bool:
+        if len(cost_per_iteration) == 0:
+            return False
+        c = 100
+        return cost_per_iteration[-c:].count(max(cost_per_iteration[-c:])) >= c/2
+        # return len(set(cost_per_iteration[-c:])) == 1
 
-    def frozen(self, temperature: float) -> bool:
+    def frozen(self, temperature: float, cost_per_iteration: [float]) -> bool:
+        if args.frozen_boundary is None:
+            return self.smart_frozen(temperature, cost_per_iteration)
         return temperature <= args.frozen_boundary
 
     def equilibrium(self):
+        if args.equilibrium is None:
+            return self.C_VARIABLES * 10
         return args.equilibrium
 
     def cool(self, temperature: float):
@@ -100,15 +112,32 @@ class SimulatedAnnealing:
 
     def get_neighbor(self, state: [bool]):
         return self.random_bitflip(state)
+        # if random.randrange(0, 100) == 0:
+        #     return self.get_random_state()
         # if self.is_sat(state):
         #     return self.random_bitflip(state)
         # return self.random_unsat_clause_bitflip(state)
 
     # --------------- State cost ---------------
 
+    def new_is_best(self, old_state: [bool], new_state: [bool]):
+        old_sat_rate = self.count_of_sat_clauses(old_state) / float(self.C_CLAUSES)
+        old_weight = self.count_weights(old_state)
+        new_sat_rate = self.count_of_sat_clauses(new_state) / float(self.C_CLAUSES)
+        new_weight = self.count_weights(new_state)
+        if new_sat_rate > old_sat_rate:
+            return True
+        elif new_sat_rate == old_sat_rate:
+            return new_weight > old_weight
+        return False
+
     def cost(self, state: [bool]):
-        # return self.count_weights(state) * self.count_of_sat_clauses(state) / self.C_CLAUSES
-        return self.count_weights(state) / (self.C_CLAUSES - self.count_of_sat_clauses(state) + 1)
+        # commented code below are older versions of cost function
+        # return self.count_weights(state) / (2 ** (self.C_CLAUSES - self.count_of_sat_clauses(state)))
+        # return self.count_weights(state) * (self.count_of_sat_clauses(state) / self.C_CLAUSES) ** 2
+        return self.count_weights(state) / ((self.C_CLAUSES - self.count_of_sat_clauses(state) ) ** 2 + 1)
+        # return self.count_weights(state) * (self.count_of_sat_clauses(state) / self.C_CLAUSES)
+        # return self.count_weights(state) * (self.count_of_sat_clauses(state) / self.C_CLAUSES)
 
     def new_is_better(self, old_state: [bool], new_state: [bool]):
         return self.cost(new_state) > self.cost(old_state)
@@ -146,16 +175,16 @@ class SimulatedAnnealing:
         i = 0
         cost_per_iteration = []
         sat_clause_rate_per_iteration = []
-        while not self.frozen(temperature):
+        while not self.frozen(temperature, cost_per_iteration):
             j = 0
             while j < self.equilibrium():
                 state = self.new_state(state, temperature)
 
+                cost_per_iteration.append(self.cost(state))
                 if white_box:
-                    cost_per_iteration.append(self.cost(state))
                     sat_clause_rate_per_iteration.append(self.count_of_sat_clauses(state) / self.C_CLAUSES)
 
-                if self.new_is_better(best, state):
+                if self.new_is_best(best, state):
                     best = copy.deepcopy(state)
 
                 j += 1
@@ -177,9 +206,9 @@ class SimulatedAnnealing:
 
         j = 0
         worse_accepted = 0
-        while j < self.C_VARIABLES:
+        while j < 20:
             new_state = self.new_state(state, temperature)
-            if self.cost(new_state) < self.cost(state): # not self.new_is_better(state, new_state):
+            if self.cost(new_state) < self.cost(state):  # not self.new_is_better(state, new_state):
                 worse_accepted += 1
             state = new_state
             j += 1
